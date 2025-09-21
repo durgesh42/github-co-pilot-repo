@@ -85,8 +85,32 @@ jobs:
             git diff --cached --name-only
           fi
 
-      - name: Create Pull Request
+      - name: Check for existing PRs
         if: steps.check_folder.outputs.folder_exists == 'true' && steps.check_changes.outputs.has_changes == 'true'
+        id: check_existing_pr
+        run: |
+          # Check if there's already an open PR from our sync branch pattern
+          EXISTING_PR=$(gh pr list \
+            --repo "${{ github.repository_owner }}/${{ matrix.repo.name }}" \
+            --head "sync-github-config-*" \
+            --state open \
+            --json number,headRefName \
+            --jq '.[0].number // empty')
+          
+          if [ -n "$EXISTING_PR" ]; then
+            echo "existing_pr=true" >> $GITHUB_OUTPUT
+            echo "existing_pr_number=$EXISTING_PR" >> $GITHUB_OUTPUT
+            echo "⚠️ Found existing PR #$EXISTING_PR for ${{ matrix.repo.name }}"
+            echo "Skipping PR creation to avoid duplicates"
+          else
+            echo "existing_pr=false" >> $GITHUB_OUTPUT
+            echo "✅ No existing PR found for ${{ matrix.repo.name }}"
+          fi
+        env:
+          GITHUB_TOKEN: ${{ secrets.SYNC_TOKEN }}
+
+      - name: Create Pull Request
+        if: steps.check_folder.outputs.folder_exists == 'true' && steps.check_changes.outputs.has_changes == 'true' && steps.check_existing_pr.outputs.existing_pr == 'false'
         id: create_pr
         uses: peter-evans/create-pull-request@v5
         with:
@@ -120,6 +144,44 @@ jobs:
             **✅ Ready for review and merge**
           branch: sync-github-config-${{ github.run_number }}
           delete-branch: true
+
+      - name: Update existing PR
+        if: steps.check_folder.outputs.folder_exists == 'true' && steps.check_changes.outputs.has_changes == 'true' && steps.check_existing_pr.outputs.existing_pr == 'true'
+        run: |
+          echo "🔄 Updating existing PR #${{ steps.check_existing_pr.outputs.existing_pr_number }} for ${{ matrix.repo.name }}"
+          
+          # Update the existing PR with new changes
+          cd target-repo
+          
+          # Get the existing branch name
+          EXISTING_BRANCH=$(gh pr view ${{ steps.check_existing_pr.outputs.existing_pr_number }} \
+            --repo "${{ github.repository_owner }}/${{ matrix.repo.name }}" \
+            --json headRefName \
+            --jq '.headRefName')
+          
+          # Switch to existing branch and update it
+          git fetch origin "$EXISTING_BRANCH"
+          git checkout "$EXISTING_BRANCH"
+          git add .
+          git commit -m "Update .github configuration from github-co-pilot-repo ($(date))" || echo "No new changes to commit"
+          git push origin "$EXISTING_BRANCH"
+          
+          # Add comment to existing PR
+          gh pr comment ${{ steps.check_existing_pr.outputs.existing_pr_number }} \
+            --repo "${{ github.repository_owner }}/${{ matrix.repo.name }}" \
+            --body "🔄 **Configuration Updated**
+          
+          New changes have been pushed to this PR from the central configuration repository.
+          
+          **Source:** ${{ github.repository }}
+          **Commit:** ${{ github.sha }}
+          **Updated:** $(date)
+          
+          Please review the latest changes."
+          
+          echo "✅ Updated existing PR #${{ steps.check_existing_pr.outputs.existing_pr_number }}"
+        env:
+          GITHUB_TOKEN: ${{ secrets.SYNC_TOKEN }}
 
       - name: Get Project ID
         if: steps.check_folder.outputs.folder_exists == 'true' && steps.check_changes.outputs.has_changes == 'true' && steps.create_pr.outputs.pull-request-url
