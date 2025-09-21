@@ -1,5 +1,5 @@
-# .github/workflows/sync-instructions.yml
-name: Sync Copilot Instructions
+# .github/workflows/sync-instructions-with-project.yml
+name: Sync Copilot Instructions with Project Tracking
 
 on:
   push:
@@ -7,14 +7,18 @@ on:
     paths: ['github-co-pilot-repo1/**', 'github-co-pilot-repo2/**']
   workflow_dispatch:
 
+env:
+  PROJECT_NUMBER: 1  # Replace with your actual project number
+  GITHUB_TOKEN: ${{ secrets.SYNC_TOKEN }}
+
 jobs:
   sync:
     runs-on: ubuntu-latest
     strategy:
       matrix:
         repo: 
-          - { name: 'repo1', source_folder: 'github-co-pilot-repo1' }
-          - { name: 'repo2', source_folder: 'github-co-pilot-repo2' }
+          - { name: 'repo1', source_folder: 'github-co-pilot-repo1', assignee: 'john-doe' }
+          - { name: 'repo2', source_folder: 'github-co-pilot-repo2', assignee: 'jane-smith' }
     
     steps:
       - name: Checkout config repo
@@ -83,14 +87,20 @@ jobs:
 
       - name: Create Pull Request
         if: steps.check_folder.outputs.folder_exists == 'true' && steps.check_changes.outputs.has_changes == 'true'
+        id: create_pr
         uses: peter-evans/create-pull-request@v5
         with:
           token: ${{ secrets.SYNC_TOKEN }}
           path: target-repo
           commit-message: 'Sync .github configuration from github-co-pilot-repo'
-          title: '🤖 Sync .github Configuration'
+          title: '🤖 Sync .github Configuration - ${{ matrix.repo.name }}'
+          assignees: ${{ matrix.repo.assignee }}
+          labels: 'copilot-config,automated'
           body: |
             ## 🚀 Automated .github Configuration Sync
+            
+            **Repository:** ${{ matrix.repo.name }}  
+            **Assigned to:** @${{ matrix.repo.assignee }}
             
             This PR syncs the complete `.github` directory configuration from the central `github-co-pilot-repo`.
             
@@ -104,9 +114,65 @@ jobs:
             - Commit: ${{ github.sha }}
             - Triggered by: ${{ github.event_name }}
             
-            ### 📂 Files Updated
-            All files and folders from the source configuration have been copied to maintain consistency across repositories.
+            ### ⚠️ Action Required
+            Please review and merge this PR to keep your repository configuration up to date.
             
             **✅ Ready for review and merge**
           branch: sync-github-config-${{ github.run_number }}
           delete-branch: true
+
+      - name: Get Project ID
+        if: steps.check_folder.outputs.folder_exists == 'true' && steps.check_changes.outputs.has_changes == 'true' && steps.create_pr.outputs.pull-request-url
+        id: get_project
+        run: |
+          PROJECT_ID=$(gh api graphql -f query='
+            query($user: String!, $number: Int!) {
+              user(login: $user) {
+                projectV2(number: $number) {
+                  id
+                }
+              }
+            }' -f user="${{ github.repository_owner }}" -F number=${{ env.PROJECT_NUMBER }} --jq '.data.user.projectV2.id')
+          echo "project_id=$PROJECT_ID" >> $GITHUB_OUTPUT
+        env:
+          GITHUB_TOKEN: ${{ secrets.SYNC_TOKEN }}
+
+      - name: Add PR to Project Board
+        if: steps.check_folder.outputs.folder_exists == 'true' && steps.check_changes.outputs.has_changes == 'true' && steps.create_pr.outputs.pull-request-url
+        run: |
+          # Get the PR node ID
+          PR_ID=$(gh api "repos/${{ github.repository_owner }}/${{ matrix.repo.name }}/pulls/${{ steps.create_pr.outputs.pull-request-number }}" --jq '.node_id')
+          
+          # Add PR to project
+          gh api graphql -f query='
+            mutation($project: ID!, $pr: ID!) {
+              addProjectV2ItemById(input: {projectId: $project, contentId: $pr}) {
+                item {
+                  id
+                }
+              }
+            }' -f project="${{ steps.get_project.outputs.project_id }}" -f pr="$PR_ID"
+          
+          echo "✅ Added PR #${{ steps.create_pr.outputs.pull-request-number }} to project board"
+        env:
+          GITHUB_TOKEN: ${{ secrets.SYNC_TOKEN }}
+
+      - name: Update Project Card with Repository Info
+        if: steps.check_folder.outputs.folder_exists == 'true' && steps.check_changes.outputs.has_changes == 'true' && steps.create_pr.outputs.pull-request-url
+        run: |
+          echo "📋 Project card created for ${{ matrix.repo.name }} PR #${{ steps.create_pr.outputs.pull-request-number }}"
+          echo "🔗 PR URL: ${{ steps.create_pr.outputs.pull-request-url }}"
+          echo "👤 Assigned to: ${{ matrix.repo.assignee }}"
+        env:
+          GITHUB_TOKEN: ${{ secrets.SYNC_TOKEN }}
+
+  project_summary:
+    needs: sync
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: Create Project Summary Comment
+        run: |
+          echo "📊 Copilot Configuration Sync Summary"
+          echo "Workflow completed for all repositories"
+          echo "Check the project board for PR status tracking"
