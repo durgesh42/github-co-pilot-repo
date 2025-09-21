@@ -26,17 +26,25 @@ jobs:
         with:
           token: ${{ secrets.SYNC_TOKEN }}
           path: config-repo
-          fetch-depth: 1
+          fetch-depth: 2  # Fetch last 2 commits to enable diff
 
       - name: Check if this repo's folder was actually changed
         id: check_changes_for_repo
         run: |
+          cd config-repo
+          
           # Get the list of changed files in this push
           if [ "${{ github.event_name }}" = "push" ]; then
-            CHANGED_FILES=$(git diff --name-only ${{ github.event.before }} ${{ github.event.after }})
+            # Use GitHub's provided commit range or fall back to HEAD~1
+            if [ -n "${{ github.event.before }}" ] && [ "${{ github.event.before }}" != "0000000000000000000000000000000000000000" ]; then
+              CHANGED_FILES=$(git diff --name-only ${{ github.event.before }} ${{ github.event.after }})
+            else
+              # For first commit or when before is null, compare with HEAD~1
+              CHANGED_FILES=$(git diff --name-only HEAD~1 HEAD 2>/dev/null || git ls-files)
+            fi
           else
             # For manual trigger, assume all repos need update
-            CHANGED_FILES="github-co-pilot-repo1/ github-co-pilot-repo2/"
+            CHANGED_FILES="${{ matrix.repo.source_folder }}/"
           fi
           
           echo "Changed files: $CHANGED_FILES"
