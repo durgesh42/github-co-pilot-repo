@@ -137,41 +137,85 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.SYNC_TOKEN }}
 
-      - name: Add PR to Project Board
+      - name: Add PR to Project Board with Status
         if: steps.check_folder.outputs.folder_exists == 'true' && steps.check_changes.outputs.has_changes == 'true' && steps.create_pr.outputs.pull-request-url
         run: |
           # Get the PR node ID
           PR_ID=$(gh api "repos/${{ github.repository_owner }}/${{ matrix.repo.name }}/pulls/${{ steps.create_pr.outputs.pull-request-number }}" --jq '.node_id')
           
-          # Add PR to project
-          gh api graphql -f query='
+          # Add PR to project and get item ID
+          ITEM_ID=$(gh api graphql -f query='
             mutation($project: ID!, $pr: ID!) {
               addProjectV2ItemById(input: {projectId: $project, contentId: $pr}) {
                 item {
                   id
                 }
               }
-            }' -f project="${{ steps.get_project.outputs.project_id }}" -f pr="$PR_ID"
+            }' -f project="${{ steps.get_project.outputs.project_id }}" -f pr="$PR_ID" --jq '.data.addProjectV2ItemById.item.id')
           
           echo "✅ Added PR #${{ steps.create_pr.outputs.pull-request-number }} to project board"
+          
+          # Get the Status field ID and "In review" option ID
+          FIELD_DATA=$(gh api graphql -f query='
+            query($project: ID!) {
+              node(id: $project) {
+                ... on ProjectV2 {
+                  fields(first: 20) {
+                    nodes {
+                      ... on ProjectV2SingleSelectField {
+                        id
+                        name
+                        options {
+                          id
+                          name
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }' -f project="${{ steps.get_project.outputs.project_id }}")
+          
+          STATUS_FIELD_ID=$(echo "$FIELD_DATA" | jq -r '.data.node.fields.nodes[] | select(.name == "Status") | .id')
+          IN_REVIEW_OPTION_ID=$(echo "$FIELD_DATA" | jq -r '.data.node.fields.nodes[] | select(.name == "Status") | .options[] | select(.name == "In review") | .id')
+          
+          # Set status to "In review" if both field and option exist
+          if [ "$STATUS_FIELD_ID" != "null" ] && [ "$IN_REVIEW_OPTION_ID" != "null" ]; then
+            gh api graphql -f query='
+              mutation($project: ID!, $item: ID!, $field: ID!, $value: String!) {
+                updateProjectV2ItemFieldValue(input: {
+                  projectId: $project
+                  itemId: $item
+                  fieldId: $field
+                  value: { singleSelectOptionId: $value }
+                }) {
+                  projectV2Item {
+                    id
+                  }
+                }
+              }' -f project="${{ steps.get_project.outputs.project_id }}" -f item="$ITEM_ID" -f field="$STATUS_FIELD_ID" -f value="$IN_REVIEW_OPTION_ID"
+            
+            echo "✅ Set status to 'In review' for PR #${{ steps.create_pr.outputs.pull-request-number }}"
+          else
+            echo "⚠️ Could not find Status field or 'In review' option in project"
+          fi
         env:
           GITHUB_TOKEN: ${{ secrets.SYNC_TOKEN }}
 
-      - name: Update Project Card with Repository Info
+      - name: Summary
         if: steps.check_folder.outputs.folder_exists == 'true' && steps.check_changes.outputs.has_changes == 'true' && steps.create_pr.outputs.pull-request-url
         run: |
-          echo "📋 Project card created for ${{ matrix.repo.name }} PR #${{ steps.create_pr.outputs.pull-request-number }}"
+          echo "📋 Project tracking setup for ${{ matrix.repo.name }}"
           echo "🔗 PR URL: ${{ steps.create_pr.outputs.pull-request-url }}"
           echo "👤 Assigned to: ${{ matrix.repo.assignee }}"
-        env:
-          GITHUB_TOKEN: ${{ secrets.SYNC_TOKEN }}
+          echo "📊 Added to project board with 'In review' status"
 
   project_summary:
     needs: sync
     runs-on: ubuntu-latest
     if: always()
     steps:
-      - name: Create Project Summary Comment
+      - name: Create Project Summary
         run: |
           echo "📊 Copilot Configuration Sync Summary"
           echo "Workflow completed for all repositories"
