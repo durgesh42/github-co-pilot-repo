@@ -4,7 +4,7 @@ name: Sync Copilot Instructions
 on:
   push:
     branches: [main]
-    paths: ['instructions/**']
+    paths: ['github-co-pilot-repo1/**', 'github-co-pilot-repo2/**']
   workflow_dispatch:
 
 jobs:
@@ -13,8 +13,8 @@ jobs:
     strategy:
       matrix:
         repo: 
-          - { name: 'repo1', instruction_file: 'repo1.md' }
-          - { name: 'repo2', instruction_file: 'repo2.md' }
+          - { name: 'repo1', source_folder: 'github-co-pilot-repo1' }
+          - { name: 'repo2', source_folder: 'github-co-pilot-repo2' }
     
     steps:
       - name: Checkout config repo
@@ -22,20 +22,23 @@ jobs:
         with:
           token: ${{ secrets.SYNC_TOKEN }}
           path: config-repo
+          fetch-depth: 1
 
-      - name: Check if instruction file exists
-        id: check_file
+      - name: Check if source folder exists
+        id: check_folder
         run: |
-          if [ -f "config-repo/instructions/${{ matrix.repo.instruction_file }}" ]; then
-            echo "file_exists=true" >> $GITHUB_OUTPUT
-            echo "✅ Found instruction file for ${{ matrix.repo.name }}"
+          if [ -d "config-repo/${{ matrix.repo.source_folder }}" ]; then
+            echo "folder_exists=true" >> $GITHUB_OUTPUT
+            echo "✅ Found source folder: ${{ matrix.repo.source_folder }}"
+            echo "📂 Contents:"
+            ls -la "config-repo/${{ matrix.repo.source_folder }}/"
           else
-            echo "file_exists=false" >> $GITHUB_OUTPUT
-            echo "❌ No instruction file found for ${{ matrix.repo.name }}"
+            echo "folder_exists=false" >> $GITHUB_OUTPUT
+            echo "❌ No source folder found: ${{ matrix.repo.source_folder }}"
           fi
 
       - name: Checkout target repo
-        if: steps.check_file.outputs.file_exists == 'true'
+        if: steps.check_folder.outputs.folder_exists == 'true'
         uses: actions/checkout@v4
         with:
           repository: ${{ github.repository_owner }}/${{ matrix.repo.name }}
@@ -43,52 +46,67 @@ jobs:
           path: target-repo
 
       - name: Create .github directory
-        if: steps.check_file.outputs.file_exists == 'true'
+        if: steps.check_folder.outputs.folder_exists == 'true'
         run: |
           mkdir -p target-repo/.github
-          echo "📁 Created .github directory"
+          echo "📁 Created .github directory in ${{ matrix.repo.name }}"
 
-      - name: Copy instruction file
-        if: steps.check_file.outputs.file_exists == 'true'
+      - name: Copy all files from source folder to .github
+        if: steps.check_folder.outputs.folder_exists == 'true'
         run: |
-          cp config-repo/instructions/${{ matrix.repo.instruction_file }} target-repo/.github/copilot-instructions.md
-          echo "📄 Copied instruction file for ${{ matrix.repo.name }}"
+          echo "🔄 Copying all contents from ${{ matrix.repo.source_folder }} to ${{ matrix.repo.name }}/.github/"
+          
+          # Copy all files and folders from source to target .github directory
+          cp -r config-repo/${{ matrix.repo.source_folder }}/* target-repo/.github/ 2>/dev/null || true
+          
+          # Also copy hidden files (like .gitignore, etc.)
+          cp -r config-repo/${{ matrix.repo.source_folder }}/.* target-repo/.github/ 2>/dev/null || true
+          
+          echo "📄 Files copied to ${{ matrix.repo.name }}:"
+          ls -la target-repo/.github/
 
       - name: Check for changes
-        if: steps.check_file.outputs.file_exists == 'true'
+        if: steps.check_folder.outputs.folder_exists == 'true'
         id: check_changes
         run: |
           cd target-repo
           git add .
           if git diff --cached --quiet; then
             echo "has_changes=false" >> $GITHUB_OUTPUT
-            echo "⚡ No changes detected"
+            echo "⚡ No changes detected in ${{ matrix.repo.name }}"
           else
             echo "has_changes=true" >> $GITHUB_OUTPUT
-            echo "🔄 Changes detected"
+            echo "🔄 Changes detected in ${{ matrix.repo.name }}"
+            echo "Changed files:"
+            git diff --cached --name-only
           fi
 
       - name: Create Pull Request
-        if: steps.check_file.outputs.file_exists == 'true' && steps.check_changes.outputs.has_changes == 'true'
+        if: steps.check_folder.outputs.folder_exists == 'true' && steps.check_changes.outputs.has_changes == 'true'
         uses: peter-evans/create-pull-request@v5
         with:
           token: ${{ secrets.SYNC_TOKEN }}
           path: target-repo
-          commit-message: 'Update GitHub Copilot instructions from c-pilot config'
-          title: '🤖 Update Copilot Instructions'
+          commit-message: 'Sync .github configuration from github-co-pilot-repo'
+          title: '🤖 Sync .github Configuration'
           body: |
-            ## 🚀 Automated Copilot Instructions Update
+            ## 🚀 Automated .github Configuration Sync
             
-            This PR updates the GitHub Copilot instructions from the central `c-pilot` repository.
+            This PR syncs the complete `.github` directory configuration from the central `github-co-pilot-repo`.
             
             ### 📋 Changes
-            - Updated `.github/copilot-instructions.md`
+            - Synced all files from `${{ matrix.repo.source_folder }}/` to `.github/`
+            - Updated GitHub configuration, workflows, templates, and Copilot instructions
             
             ### 🔗 Source
             - Config repo: ${{ github.repository }}
+            - Source folder: `${{ matrix.repo.source_folder }}/`
             - Commit: ${{ github.sha }}
-            - File: `instructions/${{ matrix.repo.instruction_file }}`
+            - Triggered by: ${{ github.event_name }}
+            
+            ### 📂 Files Updated
+            All files and folders from the source configuration have been copied to maintain consistency across repositories.
             
             **✅ Ready for review and merge**
-          branch: update-copilot-instructions-${{ github.run_number }}
+          branch: sync-github-config-${{ github.run_number }}
           delete-branch: true
