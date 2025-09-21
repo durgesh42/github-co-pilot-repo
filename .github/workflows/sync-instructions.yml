@@ -28,7 +28,30 @@ jobs:
           path: config-repo
           fetch-depth: 1
 
+      - name: Check if this repo's folder was actually changed
+        id: check_changes_for_repo
+        run: |
+          # Get the list of changed files in this push
+          if [ "${{ github.event_name }}" = "push" ]; then
+            CHANGED_FILES=$(git diff --name-only ${{ github.event.before }} ${{ github.event.after }})
+          else
+            # For manual trigger, assume all repos need update
+            CHANGED_FILES="github-co-pilot-repo1/ github-co-pilot-repo2/"
+          fi
+          
+          echo "Changed files: $CHANGED_FILES"
+          
+          # Check if this specific repo's folder was changed
+          if echo "$CHANGED_FILES" | grep -q "${{ matrix.repo.source_folder }}/"; then
+            echo "repo_changed=true" >> $GITHUB_OUTPUT
+            echo "✅ ${{ matrix.repo.source_folder }} has changes - will process"
+          else
+            echo "repo_changed=false" >> $GITHUB_OUTPUT
+            echo "⏭️ ${{ matrix.repo.source_folder }} has no changes - skipping"
+          fi
+
       - name: Check if source folder exists
+        if: steps.check_changes_for_repo.outputs.repo_changed == 'true'
         id: check_folder
         run: |
           if [ -d "config-repo/${{ matrix.repo.source_folder }}" ]; then
@@ -42,7 +65,7 @@ jobs:
           fi
 
       - name: Checkout target repo
-        if: steps.check_folder.outputs.folder_exists == 'true'
+        if: steps.check_changes_for_repo.outputs.repo_changed == 'true' && steps.check_folder.outputs.folder_exists == 'true'
         uses: actions/checkout@v4
         with:
           repository: ${{ github.repository_owner }}/${{ matrix.repo.name }}
@@ -50,13 +73,13 @@ jobs:
           path: target-repo
 
       - name: Create .github directory
-        if: steps.check_folder.outputs.folder_exists == 'true'
+        if: steps.check_changes_for_repo.outputs.repo_changed == 'true' && steps.check_folder.outputs.folder_exists == 'true'
         run: |
           mkdir -p target-repo/.github
           echo "📁 Created .github directory in ${{ matrix.repo.name }}"
 
       - name: Copy all files from source folder to .github
-        if: steps.check_folder.outputs.folder_exists == 'true'
+        if: steps.check_changes_for_repo.outputs.repo_changed == 'true' && steps.check_folder.outputs.folder_exists == 'true'
         run: |
           echo "🔄 Copying all contents from ${{ matrix.repo.source_folder }} to ${{ matrix.repo.name }}/.github/"
           
@@ -70,7 +93,7 @@ jobs:
           ls -la target-repo/.github/
 
       - name: Check for changes
-        if: steps.check_folder.outputs.folder_exists == 'true'
+        if: steps.check_changes_for_repo.outputs.repo_changed == 'true' && steps.check_folder.outputs.folder_exists == 'true'
         id: check_changes
         run: |
           cd target-repo
@@ -86,7 +109,7 @@ jobs:
           fi
 
       - name: Check for existing PRs
-        if: steps.check_folder.outputs.folder_exists == 'true' && steps.check_changes.outputs.has_changes == 'true'
+        if: steps.check_changes_for_repo.outputs.repo_changed == 'true' && steps.check_folder.outputs.folder_exists == 'true' && steps.check_changes.outputs.has_changes == 'true'
         id: check_existing_pr
         run: |
           # Check if there's already an open PR from our sync branch pattern
@@ -110,7 +133,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.SYNC_TOKEN }}
 
       - name: Create Pull Request
-        if: steps.check_folder.outputs.folder_exists == 'true' && steps.check_changes.outputs.has_changes == 'true' && steps.check_existing_pr.outputs.existing_pr == 'false'
+        if: steps.check_changes_for_repo.outputs.repo_changed == 'true' && steps.check_folder.outputs.folder_exists == 'true' && steps.check_changes.outputs.has_changes == 'true' && steps.check_existing_pr.outputs.existing_pr == 'false'
         id: create_pr
         uses: peter-evans/create-pull-request@v5
         with:
@@ -146,7 +169,7 @@ jobs:
           delete-branch: true
 
       - name: Update existing PR
-        if: steps.check_folder.outputs.folder_exists == 'true' && steps.check_changes.outputs.has_changes == 'true' && steps.check_existing_pr.outputs.existing_pr == 'true'
+        if: steps.check_changes_for_repo.outputs.repo_changed == 'true' && steps.check_folder.outputs.folder_exists == 'true' && steps.check_changes.outputs.has_changes == 'true' && steps.check_existing_pr.outputs.existing_pr == 'true'
         run: |
           echo "🔄 Updating existing PR #${{ steps.check_existing_pr.outputs.existing_pr_number }} for ${{ matrix.repo.name }}"
           
@@ -184,7 +207,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.SYNC_TOKEN }}
 
       - name: Get Project ID
-        if: steps.check_folder.outputs.folder_exists == 'true' && steps.check_changes.outputs.has_changes == 'true' && steps.create_pr.outputs.pull-request-url
+        if: steps.check_changes_for_repo.outputs.repo_changed == 'true' && steps.check_folder.outputs.folder_exists == 'true' && steps.check_changes.outputs.has_changes == 'true' && steps.create_pr.outputs.pull-request-url
         id: get_project
         run: |
           PROJECT_ID=$(gh api graphql -f query='
@@ -200,7 +223,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.SYNC_TOKEN }}
 
       - name: Add PR to Project Board with Status
-        if: steps.check_folder.outputs.folder_exists == 'true' && steps.check_changes.outputs.has_changes == 'true' && steps.create_pr.outputs.pull-request-url
+        if: steps.check_changes_for_repo.outputs.repo_changed == 'true' && steps.check_folder.outputs.folder_exists == 'true' && steps.check_changes.outputs.has_changes == 'true' && steps.create_pr.outputs.pull-request-url
         run: |
           # Get the PR node ID
           PR_ID=$(gh api "repos/${{ github.repository_owner }}/${{ matrix.repo.name }}/pulls/${{ steps.create_pr.outputs.pull-request-number }}" --jq '.node_id')
@@ -265,12 +288,17 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.SYNC_TOKEN }}
 
       - name: Summary
-        if: steps.check_folder.outputs.folder_exists == 'true' && steps.check_changes.outputs.has_changes == 'true' && steps.create_pr.outputs.pull-request-url
+        if: steps.check_changes_for_repo.outputs.repo_changed == 'true' && steps.check_folder.outputs.folder_exists == 'true' && steps.check_changes.outputs.has_changes == 'true'
         run: |
-          echo "📋 Project tracking setup for ${{ matrix.repo.name }}"
-          echo "🔗 PR URL: ${{ steps.create_pr.outputs.pull-request-url }}"
+          if [ "${{ steps.check_existing_pr.outputs.existing_pr }}" = "true" ]; then
+            echo "📋 Updated existing PR for ${{ matrix.repo.name }}"
+            echo "🔗 PR URL: https://github.com/${{ github.repository_owner }}/${{ matrix.repo.name }}/pull/${{ steps.check_existing_pr.outputs.existing_pr_number }}"
+          else
+            echo "📋 Created new PR for ${{ matrix.repo.name }}"
+            echo "🔗 PR URL: ${{ steps.create_pr.outputs.pull-request-url }}"
+            echo "📊 Added to project board with 'In review' status"
+          fi
           echo "👤 Assigned to: ${{ matrix.repo.assignee }}"
-          echo "📊 Added to project board with 'In review' status"
 
   project_summary:
     needs: sync
