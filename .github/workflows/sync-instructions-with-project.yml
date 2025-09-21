@@ -4,11 +4,11 @@ name: Sync Copilot Instructions with Project Tracking
 on:
   push:
     branches: [main]
-    paths: ["github-co-pilot-repo1/**", "github-co-pilot-repo2/**"]
+    paths: ['github-co-pilot-repo1/**', 'github-co-pilot-repo2/**']
   workflow_dispatch:
 
 env:
-  PROJECT_NUMBER: 1 # Replace with your actual project number
+  PROJECT_NUMBER: 1  # Replace with your actual project number
   GITHUB_TOKEN: ${{ secrets.SYNC_TOKEN }}
 
 jobs:
@@ -16,18 +16,10 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        repo:
-          - {
-              name: "repo1",
-              source_folder: "github-co-pilot-repo1",
-              assignee: "john-doe",
-            }
-          - {
-              name: "repo2",
-              source_folder: "github-co-pilot-repo2",
-              assignee: "jane-smith",
-            }
-
+        repo: 
+          - { name: 'repo1', source_folder: 'github-co-pilot-repo1', assignee: 'john-doe' }
+          - { name: 'repo2', source_folder: 'github-co-pilot-repo2', assignee: 'jane-smith' }
+    
     steps:
       - name: Checkout config repo
         uses: actions/checkout@v4
@@ -67,13 +59,13 @@ jobs:
         if: steps.check_folder.outputs.folder_exists == 'true'
         run: |
           echo "🔄 Copying all contents from ${{ matrix.repo.source_folder }} to ${{ matrix.repo.name }}/.github/"
-
+          
           # Copy all files and folders from source to target .github directory
           cp -r config-repo/${{ matrix.repo.source_folder }}/* target-repo/.github/ 2>/dev/null || true
-
+          
           # Also copy hidden files (like .gitignore, etc.)
           cp -r config-repo/${{ matrix.repo.source_folder }}/.* target-repo/.github/ 2>/dev/null || true
-
+          
           echo "📄 Files copied to ${{ matrix.repo.name }}:"
           ls -la target-repo/.github/
 
@@ -100,31 +92,31 @@ jobs:
         with:
           token: ${{ secrets.SYNC_TOKEN }}
           path: target-repo
-          commit-message: "Sync .github configuration from github-co-pilot-repo"
-          title: "🤖 Sync .github Configuration - ${{ matrix.repo.name }}"
+          commit-message: 'Sync .github configuration from github-co-pilot-repo'
+          title: '🤖 Sync .github Configuration - ${{ matrix.repo.name }}'
           assignees: ${{ matrix.repo.assignee }}
-          labels: "copilot-config,automated"
+          labels: 'copilot-config,automated'
           body: |
             ## 🚀 Automated .github Configuration Sync
-
+            
             **Repository:** ${{ matrix.repo.name }}  
             **Assigned to:** @${{ matrix.repo.assignee }}
-
+            
             This PR syncs the complete `.github` directory configuration from the central `github-co-pilot-repo`.
-
+            
             ### 📋 Changes
             - Synced all files from `${{ matrix.repo.source_folder }}/` to `.github/`
             - Updated GitHub configuration, workflows, templates, and Copilot instructions
-
+            
             ### 🔗 Source
             - Config repo: ${{ github.repository }}
             - Source folder: `${{ matrix.repo.source_folder }}/`
             - Commit: ${{ github.sha }}
             - Triggered by: ${{ github.event_name }}
-
+            
             ### ⚠️ Action Required
             Please review and merge this PR to keep your repository configuration up to date.
-
+            
             **✅ Ready for review and merge**
           branch: sync-github-config-${{ github.run_number }}
           delete-branch: true
@@ -134,13 +126,13 @@ jobs:
         id: get_project
         run: |
           PROJECT_ID=$(gh api graphql -f query='
-            query($org: String!, $number: Int!) {
-              organization(login: $org) {
+            query($user: String!, $number: Int!) {
+              user(login: $user) {
                 projectV2(number: $number) {
                   id
                 }
               }
-            }' -f org="${{ github.repository_owner }}" -F number=${{ env.PROJECT_NUMBER }} --jq '.data.organization.projectV2.id')
+            }' -f user="${{ github.repository_owner }}" -F number=${{ env.PROJECT_NUMBER }} --jq '.data.user.projectV2.id')
           echo "project_id=$PROJECT_ID" >> $GITHUB_OUTPUT
         env:
           GITHUB_TOKEN: ${{ secrets.SYNC_TOKEN }}
@@ -150,7 +142,7 @@ jobs:
         run: |
           # Get the PR node ID
           PR_ID=$(gh api "repos/${{ github.repository_owner }}/${{ matrix.repo.name }}/pulls/${{ steps.create_pr.outputs.pull-request-number }}" --jq '.node_id')
-
+          
           # Add PR to project
           gh api graphql -f query='
             mutation($project: ID!, $pr: ID!) {
@@ -160,7 +152,7 @@ jobs:
                 }
               }
             }' -f project="${{ steps.get_project.outputs.project_id }}" -f pr="$PR_ID"
-
+          
           echo "✅ Added PR #${{ steps.create_pr.outputs.pull-request-number }} to project board"
         env:
           GITHUB_TOKEN: ${{ secrets.SYNC_TOKEN }}
