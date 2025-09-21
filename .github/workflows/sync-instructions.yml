@@ -1,5 +1,5 @@
-# .github/workflows/sync-instructions-with-project.yml
-name: Sync Copilot Instructions with Project Tracking
+# .github/workflows/sync-instructions-simple.yml
+name: Sync Copilot Instructions (Simplified)
 
 on:
   push:
@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
 
 env:
-  PROJECT_NUMBER: 1  # Replace with your actual project number
+  PROJECT_NUMBER: 1
   GITHUB_TOKEN: ${{ secrets.SYNC_TOKEN }}
 
 jobs:
@@ -17,61 +17,56 @@ jobs:
     strategy:
       matrix:
         repo: 
-          - { name: 'repo1', source_folder: 'github-co-pilot-repo1', assignee: 'john-doe' }
-          - { name: 'repo2', source_folder: 'github-co-pilot-repo2', assignee: 'jane-smith' }
+          - { name: 'repo1', source_folder: 'github-co-pilot-repo1', assignee: 'durgesh42' }
+          - { name: 'repo2', source_folder: 'github-co-pilot-repo2', assignee: 'durgesh42' }
     
     steps:
+      # Step 1: Get the config repository
       - name: Checkout config repo
         uses: actions/checkout@v4
         with:
           token: ${{ secrets.SYNC_TOKEN }}
           path: config-repo
-          fetch-depth: 2  # Fetch last 2 commits to enable diff
+          fetch-depth: 2
 
-      - name: Check if this repo's folder was actually changed
+      # Step 2: Check if this specific repo folder was changed (prevents duplicate PRs)
+      - name: Check if this repo was changed
         id: check_changes_for_repo
         run: |
-          cd config-repo
-          
-          # Get the list of changed files in this push
+          # Use GitHub API to get changed files (more reliable than git diff)
           if [ "${{ github.event_name }}" = "push" ]; then
-            # Use GitHub's provided commit range or fall back to HEAD~1
-            if [ -n "${{ github.event.before }}" ] && [ "${{ github.event.before }}" != "0000000000000000000000000000000000000000" ]; then
-              CHANGED_FILES=$(git diff --name-only ${{ github.event.before }} ${{ github.event.after }})
-            else
-              # For first commit or when before is null, compare with HEAD~1
-              CHANGED_FILES=$(git diff --name-only HEAD~1 HEAD 2>/dev/null || git ls-files)
-            fi
+            CHANGED_FILES=$(gh api repos/${{ github.repository }}/commits/${{ github.sha }}/files --jq '.[].filename' | tr '\n' ' ')
+            echo "Changed files: $CHANGED_FILES"
           else
-            # For manual trigger, assume all repos need update
+            # Manual trigger - process this repo
             CHANGED_FILES="${{ matrix.repo.source_folder }}/"
           fi
           
-          echo "Changed files: $CHANGED_FILES"
-          
-          # Check if this specific repo's folder was changed
+          # Check if this repo's folder was changed
           if echo "$CHANGED_FILES" | grep -q "${{ matrix.repo.source_folder }}/"; then
             echo "repo_changed=true" >> $GITHUB_OUTPUT
-            echo "✅ ${{ matrix.repo.source_folder }} has changes - will process"
+            echo "✅ ${{ matrix.repo.source_folder }} has changes"
           else
             echo "repo_changed=false" >> $GITHUB_OUTPUT
-            echo "⏭️ ${{ matrix.repo.source_folder }} has no changes - skipping"
+            echo "⏭️ ${{ matrix.repo.source_folder }} - no changes, skipping"
           fi
+        env:
+          GITHUB_TOKEN: ${{ secrets.SYNC_TOKEN }}
 
+      # Step 3: Verify source folder exists
       - name: Check if source folder exists
         if: steps.check_changes_for_repo.outputs.repo_changed == 'true'
         id: check_folder
         run: |
           if [ -d "config-repo/${{ matrix.repo.source_folder }}" ]; then
             echo "folder_exists=true" >> $GITHUB_OUTPUT
-            echo "✅ Found source folder: ${{ matrix.repo.source_folder }}"
-            echo "📂 Contents:"
-            ls -la "config-repo/${{ matrix.repo.source_folder }}/"
+            echo "✅ Found: ${{ matrix.repo.source_folder }}"
           else
             echo "folder_exists=false" >> $GITHUB_OUTPUT
-            echo "❌ No source folder found: ${{ matrix.repo.source_folder }}"
+            echo "❌ Missing: ${{ matrix.repo.source_folder }}"
           fi
 
+      # Step 4: Get the target repository
       - name: Checkout target repo
         if: steps.check_changes_for_repo.outputs.repo_changed == 'true' && steps.check_folder.outputs.folder_exists == 'true'
         uses: actions/checkout@v4
@@ -80,26 +75,16 @@ jobs:
           token: ${{ secrets.SYNC_TOKEN }}
           path: target-repo
 
-      - name: Create .github directory
+      # Step 5: Copy configuration files
+      - name: Copy files to target repo
         if: steps.check_changes_for_repo.outputs.repo_changed == 'true' && steps.check_folder.outputs.folder_exists == 'true'
         run: |
           mkdir -p target-repo/.github
-          echo "📁 Created .github directory in ${{ matrix.repo.name }}"
-
-      - name: Copy all files from source folder to .github
-        if: steps.check_changes_for_repo.outputs.repo_changed == 'true' && steps.check_folder.outputs.folder_exists == 'true'
-        run: |
-          echo "🔄 Copying all contents from ${{ matrix.repo.source_folder }} to ${{ matrix.repo.name }}/.github/"
-          
-          # Copy all files and folders from source to target .github directory
           cp -r config-repo/${{ matrix.repo.source_folder }}/* target-repo/.github/ 2>/dev/null || true
-          
-          # Also copy hidden files (like .gitignore, etc.)
           cp -r config-repo/${{ matrix.repo.source_folder }}/.* target-repo/.github/ 2>/dev/null || true
-          
-          echo "📄 Files copied to ${{ matrix.repo.name }}:"
-          ls -la target-repo/.github/
+          echo "📄 Files copied to ${{ matrix.repo.name }}"
 
+      # Step 6: Check if there are actual changes to commit
       - name: Check for changes
         if: steps.check_changes_for_repo.outputs.repo_changed == 'true' && steps.check_folder.outputs.folder_exists == 'true'
         id: check_changes
@@ -108,213 +93,99 @@ jobs:
           git add .
           if git diff --cached --quiet; then
             echo "has_changes=false" >> $GITHUB_OUTPUT
-            echo "⚡ No changes detected in ${{ matrix.repo.name }}"
+            echo "⚡ No changes in ${{ matrix.repo.name }}"
           else
             echo "has_changes=true" >> $GITHUB_OUTPUT
             echo "🔄 Changes detected in ${{ matrix.repo.name }}"
-            echo "Changed files:"
-            git diff --cached --name-only
           fi
 
-      - name: Check for existing PRs
+      # Step 7: Check if PR already exists (prevents duplicates)
+      - name: Check for existing PR
         if: steps.check_changes_for_repo.outputs.repo_changed == 'true' && steps.check_folder.outputs.folder_exists == 'true' && steps.check_changes.outputs.has_changes == 'true'
         id: check_existing_pr
         run: |
-          # Check if there's already an open PR from our sync branch pattern
-          EXISTING_PR=$(gh pr list \
-            --repo "${{ github.repository_owner }}/${{ matrix.repo.name }}" \
-            --head "sync-github-config-*" \
-            --state open \
-            --json number,headRefName \
-            --jq '.[0].number // empty')
+          EXISTING_PR=$(gh pr list --repo "${{ github.repository_owner }}/${{ matrix.repo.name }}" --head "sync-github-config-*" --state open --json number --jq '.[0].number // empty')
           
           if [ -n "$EXISTING_PR" ]; then
             echo "existing_pr=true" >> $GITHUB_OUTPUT
             echo "existing_pr_number=$EXISTING_PR" >> $GITHUB_OUTPUT
-            echo "⚠️ Found existing PR #$EXISTING_PR for ${{ matrix.repo.name }}"
-            echo "Skipping PR creation to avoid duplicates"
+            echo "⚠️ Found existing PR #$EXISTING_PR"
           else
             echo "existing_pr=false" >> $GITHUB_OUTPUT
-            echo "✅ No existing PR found for ${{ matrix.repo.name }}"
+            echo "✅ No existing PR found"
           fi
         env:
           GITHUB_TOKEN: ${{ secrets.SYNC_TOKEN }}
 
-      - name: Create Pull Request
+      # Step 8a: Create new PR (if none exists)
+      - name: Create new PR
         if: steps.check_changes_for_repo.outputs.repo_changed == 'true' && steps.check_folder.outputs.folder_exists == 'true' && steps.check_changes.outputs.has_changes == 'true' && steps.check_existing_pr.outputs.existing_pr == 'false'
         id: create_pr
         uses: peter-evans/create-pull-request@v5
         with:
           token: ${{ secrets.SYNC_TOKEN }}
           path: target-repo
-          commit-message: 'Sync .github configuration from github-co-pilot-repo'
           title: '🤖 Sync .github Configuration - ${{ matrix.repo.name }}'
           assignees: ${{ matrix.repo.assignee }}
           labels: 'copilot-config,automated'
           body: |
-            ## 🚀 Automated .github Configuration Sync
+            ## 🚀 Automated Configuration Sync
             
             **Repository:** ${{ matrix.repo.name }}  
             **Assigned to:** @${{ matrix.repo.assignee }}
             
-            This PR syncs the complete `.github` directory configuration from the central `github-co-pilot-repo`.
+            This PR syncs configuration from the central repository.
             
-            ### 📋 Changes
-            - Synced all files from `${{ matrix.repo.source_folder }}/` to `.github/`
-            - Updated GitHub configuration, workflows, templates, and Copilot instructions
+            **Source:** ${{ github.repository }}
+            **Folder:** ${{ matrix.repo.source_folder }}/
             
-            ### 🔗 Source
-            - Config repo: ${{ github.repository }}
-            - Source folder: `${{ matrix.repo.source_folder }}/`
-            - Commit: ${{ github.sha }}
-            - Triggered by: ${{ github.event_name }}
-            
-            ### ⚠️ Action Required
-            Please review and merge this PR to keep your repository configuration up to date.
-            
-            **✅ Ready for review and merge**
+            Please review and merge to keep configurations up to date.
           branch: sync-github-config-${{ github.run_number }}
           delete-branch: true
 
+      # Step 8b: Update existing PR (if one exists)
       - name: Update existing PR
         if: steps.check_changes_for_repo.outputs.repo_changed == 'true' && steps.check_folder.outputs.folder_exists == 'true' && steps.check_changes.outputs.has_changes == 'true' && steps.check_existing_pr.outputs.existing_pr == 'true'
         run: |
-          echo "🔄 Updating existing PR #${{ steps.check_existing_pr.outputs.existing_pr_number }} for ${{ matrix.repo.name }}"
-          
-          # Update the existing PR with new changes
           cd target-repo
           
-          # Get the existing branch name
-          EXISTING_BRANCH=$(gh pr view ${{ steps.check_existing_pr.outputs.existing_pr_number }} \
-            --repo "${{ github.repository_owner }}/${{ matrix.repo.name }}" \
-            --json headRefName \
-            --jq '.headRefName')
-          
-          # Switch to existing branch and update it
+          # Get existing branch and update it
+          EXISTING_BRANCH=$(gh pr view ${{ steps.check_existing_pr.outputs.existing_pr_number }} --repo "${{ github.repository_owner }}/${{ matrix.repo.name }}" --json headRefName --jq '.headRefName')
           git fetch origin "$EXISTING_BRANCH"
           git checkout "$EXISTING_BRANCH"
           git add .
-          git commit -m "Update .github configuration from github-co-pilot-repo ($(date))" || echo "No new changes to commit"
+          git commit -m "Update configuration ($(date))" || echo "No new changes"
           git push origin "$EXISTING_BRANCH"
           
-          # Add comment to existing PR
-          gh pr comment ${{ steps.check_existing_pr.outputs.existing_pr_number }} \
-            --repo "${{ github.repository_owner }}/${{ matrix.repo.name }}" \
-            --body "🔄 **Configuration Updated**
-          
-          New changes have been pushed to this PR from the central configuration repository.
-          
-          **Source:** ${{ github.repository }}
-          **Commit:** ${{ github.sha }}
-          **Updated:** $(date)
-          
-          Please review the latest changes."
+          # Add comment to PR
+          gh pr comment ${{ steps.check_existing_pr.outputs.existing_pr_number }} --repo "${{ github.repository_owner }}/${{ matrix.repo.name }}" --body "🔄 Configuration updated from central repository"
           
           echo "✅ Updated existing PR #${{ steps.check_existing_pr.outputs.existing_pr_number }}"
         env:
           GITHUB_TOKEN: ${{ secrets.SYNC_TOKEN }}
 
-      - name: Get Project ID
-        if: steps.check_changes_for_repo.outputs.repo_changed == 'true' && steps.check_folder.outputs.folder_exists == 'true' && steps.check_changes.outputs.has_changes == 'true' && steps.create_pr.outputs.pull-request-url
-        id: get_project
-        run: |
-          PROJECT_ID=$(gh api graphql -f query='
-            query($user: String!, $number: Int!) {
-              user(login: $user) {
-                projectV2(number: $number) {
-                  id
-                }
-              }
-            }' -f user="${{ github.repository_owner }}" -F number=${{ env.PROJECT_NUMBER }} --jq '.data.user.projectV2.id')
-          echo "project_id=$PROJECT_ID" >> $GITHUB_OUTPUT
-        env:
-          GITHUB_TOKEN: ${{ secrets.SYNC_TOKEN }}
-
-      - name: Add PR to Project Board with Status
+      # Step 9: Add new PR to project board
+      - name: Add to project board
         if: steps.check_changes_for_repo.outputs.repo_changed == 'true' && steps.check_folder.outputs.folder_exists == 'true' && steps.check_changes.outputs.has_changes == 'true' && steps.create_pr.outputs.pull-request-url
         run: |
-          # Get the PR node ID
+          # Get project ID
+          PROJECT_ID=$(gh api graphql -f query='query($user: String!, $number: Int!) { user(login: $user) { projectV2(number: $number) { id } } }' -f user="${{ github.repository_owner }}" -F number=${{ env.PROJECT_NUMBER }} --jq '.data.user.projectV2.id')
+          
+          # Get PR ID and add to project
           PR_ID=$(gh api "repos/${{ github.repository_owner }}/${{ matrix.repo.name }}/pulls/${{ steps.create_pr.outputs.pull-request-number }}" --jq '.node_id')
+          gh api graphql -f query='mutation($project: ID!, $pr: ID!) { addProjectV2ItemById(input: {projectId: $project, contentId: $pr}) { item { id } } }' -f project="$PROJECT_ID" -f pr="$PR_ID"
           
-          # Add PR to project and get item ID
-          ITEM_ID=$(gh api graphql -f query='
-            mutation($project: ID!, $pr: ID!) {
-              addProjectV2ItemById(input: {projectId: $project, contentId: $pr}) {
-                item {
-                  id
-                }
-              }
-            }' -f project="${{ steps.get_project.outputs.project_id }}" -f pr="$PR_ID" --jq '.data.addProjectV2ItemById.item.id')
-          
-          echo "✅ Added PR #${{ steps.create_pr.outputs.pull-request-number }} to project board"
-          
-          # Get the Status field ID and "In review" option ID
-          FIELD_DATA=$(gh api graphql -f query='
-            query($project: ID!) {
-              node(id: $project) {
-                ... on ProjectV2 {
-                  fields(first: 20) {
-                    nodes {
-                      ... on ProjectV2SingleSelectField {
-                        id
-                        name
-                        options {
-                          id
-                          name
-                        }
-                      }
-                    }
-                  }
-                }
-              }
-            }' -f project="${{ steps.get_project.outputs.project_id }}")
-          
-          STATUS_FIELD_ID=$(echo "$FIELD_DATA" | jq -r '.data.node.fields.nodes[] | select(.name == "Status") | .id')
-          IN_REVIEW_OPTION_ID=$(echo "$FIELD_DATA" | jq -r '.data.node.fields.nodes[] | select(.name == "Status") | .options[] | select(.name == "In review") | .id')
-          
-          # Set status to "In review" if both field and option exist
-          if [ "$STATUS_FIELD_ID" != "null" ] && [ "$IN_REVIEW_OPTION_ID" != "null" ]; then
-            gh api graphql -f query='
-              mutation($project: ID!, $item: ID!, $field: ID!, $value: String!) {
-                updateProjectV2ItemFieldValue(input: {
-                  projectId: $project
-                  itemId: $item
-                  fieldId: $field
-                  value: { singleSelectOptionId: $value }
-                }) {
-                  projectV2Item {
-                    id
-                  }
-                }
-              }' -f project="${{ steps.get_project.outputs.project_id }}" -f item="$ITEM_ID" -f field="$STATUS_FIELD_ID" -f value="$IN_REVIEW_OPTION_ID"
-            
-            echo "✅ Set status to 'In review' for PR #${{ steps.create_pr.outputs.pull-request-number }}"
-          else
-            echo "⚠️ Could not find Status field or 'In review' option in project"
-          fi
+          echo "✅ Added PR to project board"
         env:
           GITHUB_TOKEN: ${{ secrets.SYNC_TOKEN }}
 
+      # Step 10: Summary
       - name: Summary
         if: steps.check_changes_for_repo.outputs.repo_changed == 'true' && steps.check_folder.outputs.folder_exists == 'true' && steps.check_changes.outputs.has_changes == 'true'
         run: |
           if [ "${{ steps.check_existing_pr.outputs.existing_pr }}" = "true" ]; then
             echo "📋 Updated existing PR for ${{ matrix.repo.name }}"
-            echo "🔗 PR URL: https://github.com/${{ github.repository_owner }}/${{ matrix.repo.name }}/pull/${{ steps.check_existing_pr.outputs.existing_pr_number }}"
           else
             echo "📋 Created new PR for ${{ matrix.repo.name }}"
-            echo "🔗 PR URL: ${{ steps.create_pr.outputs.pull-request-url }}"
-            echo "📊 Added to project board with 'In review' status"
           fi
           echo "👤 Assigned to: ${{ matrix.repo.assignee }}"
-
-  project_summary:
-    needs: sync
-    runs-on: ubuntu-latest
-    if: always()
-    steps:
-      - name: Create Project Summary
-        run: |
-          echo "📊 Copilot Configuration Sync Summary"
-          echo "Workflow completed for all repositories"
-          echo "Check the project board for PR status tracking"
