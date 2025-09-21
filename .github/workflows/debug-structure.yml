@@ -1,0 +1,25 @@
+name: Debug Repository Structure
+
+on:
+  workflow_dispatch:
+
+jobs:
+  debug:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        
+      - name: Show complete directory structure
+        run: |
+          echo "🔍 Complete repository structure:"
+          tree . || find . -type d | sort
+          echo ""
+          echo "📁 Root level contents:"
+          ls -la
+          echo ""
+          echo "🔍 Looking for github-co-pilot folders:"
+          find . -name "*github-co-pilot*" -type d
+          echo ""
+          echo "📂 All directories:"
+          find . -type d | grep -v "\.git" | sort
