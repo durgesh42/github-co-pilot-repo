@@ -4,7 +4,7 @@ name: Sync Copilot Instructions (Simplified)
 on:
   push:
     branches: [main]
-    paths: ['github-co-pilot-repo1/**', 'github-co-pilot-repo2/**']
+    paths: ["github-co-pilot-repo1/**", "github-co-pilot-repo2/**"]
   workflow_dispatch:
 
 env:
@@ -16,10 +16,20 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        repo: 
-          - { name: 'repo1', source_folder: 'github-co-pilot-repo1', assignee: 'durgesh42' }
-          - { name: 'repo2', source_folder: 'github-co-pilot-repo2', assignee: 'durgesh42' }
-    
+        repo:
+          - {
+              name: "repo1",
+              source_folder: "github-co-pilot-repo1",
+              assignee: "durgesh42",
+              reviewers: "durgesh42,Copilot",
+            }
+          - {
+              name: "repo2",
+              source_folder: "github-co-pilot-repo2",
+              assignee: "durgesh42",
+              reviewers: "mike-dev,sara-lead",
+            }
+
     steps:
       # Step 1: Get the config repository
       - name: Checkout config repo
@@ -41,7 +51,7 @@ jobs:
             # Manual trigger - process this repo
             CHANGED_FILES="${{ matrix.repo.source_folder }}/"
           fi
-          
+
           # Check if this repo's folder was changed
           if echo "$CHANGED_FILES" | grep -q "${{ matrix.repo.source_folder }}/"; then
             echo "repo_changed=true" >> $GITHUB_OUTPUT
@@ -105,7 +115,7 @@ jobs:
         id: check_existing_pr
         run: |
           EXISTING_PR=$(gh pr list --repo "${{ github.repository_owner }}/${{ matrix.repo.name }}" --head "sync-github-config-*" --state open --json number --jq '.[0].number // empty')
-          
+
           if [ -n "$EXISTING_PR" ]; then
             echo "existing_pr=true" >> $GITHUB_OUTPUT
             echo "existing_pr_number=$EXISTING_PR" >> $GITHUB_OUTPUT
@@ -125,20 +135,22 @@ jobs:
         with:
           token: ${{ secrets.SYNC_TOKEN }}
           path: target-repo
-          title: '🤖 Sync .github Configuration - ${{ matrix.repo.name }}'
+          title: "🤖 Sync .github Configuration - ${{ matrix.repo.name }}"
           assignees: ${{ matrix.repo.assignee }}
-          labels: 'copilot-config,automated'
+          reviewers: ${{ matrix.repo.reviewers }}
+          labels: "copilot-config,automated"
           body: |
             ## 🚀 Automated Configuration Sync
-            
+
             **Repository:** ${{ matrix.repo.name }}  
             **Assigned to:** @${{ matrix.repo.assignee }}
-            
+            **Reviewers:** @${{ matrix.repo.reviewers }}
+
             This PR syncs configuration from the central repository.
-            
+
             **Source:** ${{ github.repository }}
             **Folder:** ${{ matrix.repo.source_folder }}/
-            
+
             Please review and merge to keep configurations up to date.
           branch: sync-github-config-${{ github.run_number }}
           delete-branch: true
@@ -148,7 +160,7 @@ jobs:
         if: steps.check_changes_for_repo.outputs.repo_changed == 'true' && steps.check_folder.outputs.folder_exists == 'true' && steps.check_changes.outputs.has_changes == 'true' && steps.check_existing_pr.outputs.existing_pr == 'true'
         run: |
           cd target-repo
-          
+
           # Get existing branch and update it
           EXISTING_BRANCH=$(gh pr view ${{ steps.check_existing_pr.outputs.existing_pr_number }} --repo "${{ github.repository_owner }}/${{ matrix.repo.name }}" --json headRefName --jq '.headRefName')
           git fetch origin "$EXISTING_BRANCH"
@@ -156,10 +168,10 @@ jobs:
           git add .
           git commit -m "Update configuration ($(date))" || echo "No new changes"
           git push origin "$EXISTING_BRANCH"
-          
+
           # Add comment to PR
           gh pr comment ${{ steps.check_existing_pr.outputs.existing_pr_number }} --repo "${{ github.repository_owner }}/${{ matrix.repo.name }}" --body "🔄 Configuration updated from central repository"
-          
+
           echo "✅ Updated existing PR #${{ steps.check_existing_pr.outputs.existing_pr_number }}"
         env:
           GITHUB_TOKEN: ${{ secrets.SYNC_TOKEN }}
@@ -170,11 +182,11 @@ jobs:
         run: |
           # Get project ID
           PROJECT_ID=$(gh api graphql -f query='query($user: String!, $number: Int!) { user(login: $user) { projectV2(number: $number) { id } } }' -f user="${{ github.repository_owner }}" -F number=${{ env.PROJECT_NUMBER }} --jq '.data.user.projectV2.id')
-          
+
           # Get PR ID and add to project
           PR_ID=$(gh api "repos/${{ github.repository_owner }}/${{ matrix.repo.name }}/pulls/${{ steps.create_pr.outputs.pull-request-number }}" --jq '.node_id')
           gh api graphql -f query='mutation($project: ID!, $pr: ID!) { addProjectV2ItemById(input: {projectId: $project, contentId: $pr}) { item { id } } }' -f project="$PROJECT_ID" -f pr="$PR_ID"
-          
+
           echo "✅ Added PR to project board"
         env:
           GITHUB_TOKEN: ${{ secrets.SYNC_TOKEN }}
