@@ -1,0 +1,94 @@
+# .github/workflows/sync-instructions.yml
+name: Sync Copilot Instructions
+
+on:
+  push:
+    branches: [main]
+    paths: ['instructions/**']
+  workflow_dispatch:
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        repo: 
+          - { name: 'repo1', instruction_file: 'repo1.md' }
+          - { name: 'repo2', instruction_file: 'repo2.md' }
+    
+    steps:
+      - name: Checkout config repo
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.SYNC_TOKEN }}
+          path: config-repo
+
+      - name: Check if instruction file exists
+        id: check_file
+        run: |
+          if [ -f "config-repo/instructions/${{ matrix.repo.instruction_file }}" ]; then
+            echo "file_exists=true" >> $GITHUB_OUTPUT
+            echo "✅ Found instruction file for ${{ matrix.repo.name }}"
+          else
+            echo "file_exists=false" >> $GITHUB_OUTPUT
+            echo "❌ No instruction file found for ${{ matrix.repo.name }}"
+          fi
+
+      - name: Checkout target repo
+        if: steps.check_file.outputs.file_exists == 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/${{ matrix.repo.name }}
+          token: ${{ secrets.SYNC_TOKEN }}
+          path: target-repo
+
+      - name: Create .github directory
+        if: steps.check_file.outputs.file_exists == 'true'
+        run: |
+          mkdir -p target-repo/.github
+          echo "📁 Created .github directory"
+
+      - name: Copy instruction file
+        if: steps.check_file.outputs.file_exists == 'true'
+        run: |
+          cp config-repo/instructions/${{ matrix.repo.instruction_file }} target-repo/.github/copilot-instructions.md
+          echo "📄 Copied instruction file for ${{ matrix.repo.name }}"
+
+      - name: Check for changes
+        if: steps.check_file.outputs.file_exists == 'true'
+        id: check_changes
+        run: |
+          cd target-repo
+          git add .
+          if git diff --cached --quiet; then
+            echo "has_changes=false" >> $GITHUB_OUTPUT
+            echo "⚡ No changes detected"
+          else
+            echo "has_changes=true" >> $GITHUB_OUTPUT
+            echo "🔄 Changes detected"
+          fi
+
+      - name: Create Pull Request
+        if: steps.check_file.outputs.file_exists == 'true' && steps.check_changes.outputs.has_changes == 'true'
+        uses: peter-evans/create-pull-request@v5
+        with:
+          token: ${{ secrets.SYNC_TOKEN }}
+          path: target-repo
+          commit-message: 'Update GitHub Copilot instructions from c-pilot config'
+          title: '🤖 Update Copilot Instructions'
+          body: |
+            ## 🚀 Automated Copilot Instructions Update
+            
+            This PR updates the GitHub Copilot instructions from the central `c-pilot` repository.
+            
+            ### 📋 Changes
+            - Updated `.github/copilot-instructions.md`
+            
+            ### 🔗 Source
+            - Config repo: ${{ github.repository }}
+            - Commit: ${{ github.sha }}
+            - File: `instructions/${{ matrix.repo.instruction_file }}`
+            
+            **✅ Ready for review and merge**
+          branch: update-copilot-instructions-${{ github.run_number }}
+          delete-branch: true
